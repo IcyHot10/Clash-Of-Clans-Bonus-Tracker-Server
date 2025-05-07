@@ -10,17 +10,14 @@ CORS(app)
 
 API_KEY = os.getenv("API_KEY")
 BASE_URL = os.getenv("BASE_URL")
-CLAN_TAG = "%232LPOGLU2U"  # URL encoded clan tag
 
-@app.route('/')
-def hello_world():  # put application's code here
-    return 'Hello World!'
+http = httpx.Client(transport=httpx.HTTPTransport(local_address="0.0.0.0"))
 
 @app.route('/leaderboard/<clan_tag>')
 def get_leaderboard(clan_tag: str) -> dict[str, Any] | None:
     """Get the current league information and process wars."""
     try:
-        response = httpx.get(
+        response = http.get(
             f"{BASE_URL}/clans/{clan_tag.replace('#', '%23')}/currentwar/leaguegroup",
             headers={"Authorization": f"Bearer {API_KEY}"}
         )
@@ -28,9 +25,13 @@ def get_leaderboard(clan_tag: str) -> dict[str, Any] | None:
         for clan in data['clans']:
             if clan['tag'] == clan_tag:
                 break
+
+        if clan['tag'] != clan_tag:
+            return {'state': 'NO-CLAN'}
+
         if data.get("state") in ["inWar", "ended"]:
-            summ_clan = find_wars(clan_tag, data.get("rounds", []))
-            rankings = consolidate_leaderboard(summ_clan)
+            summ_clan, bonuses = find_wars(clan_tag, data.get("rounds", []))
+            rankings = consolidate_leaderboard(summ_clan, bonuses)
             return {'clanTag': clan['tag'], 'clanName': clan['name'], 'clanLogo': clan['badgeUrls']['large'], 'leaderboard': rankings, 'state': 'SUCCESS'}
         else:
             return {'state': 'NON-CWL'}
@@ -38,11 +39,18 @@ def get_leaderboard(clan_tag: str) -> dict[str, Any] | None:
         print(f"Error getting league: {e}")
 
 
+def check_winner(clan, opp):
+    if clan['stars'] > opp['stars']:
+        return True
+    elif clan['stars'] < opp['stars']:
+        return False
+    else:
+        return clan['destructionPercentage'] > opp['destructionPercentage']
 
-def get_war(clan_tag: str, war_tag: str) -> List[Dict[str, Any]] | None:
+def get_war(clan_tag: str, war_tag: str, bonuses: int) -> (List[Dict[str, Any]] | None, int):
     """Get war information and process member data."""
     try:
-        response = httpx.get(
+        response = http.get(
             f"{BASE_URL}/clanwarleagues/wars/{war_tag.replace('#', '%23')}",
             headers={"Authorization": f"Bearer {API_KEY}"}
         )
@@ -51,11 +59,13 @@ def get_war(clan_tag: str, war_tag: str) -> List[Dict[str, Any]] | None:
         if data["clan"]["tag"] == clan_tag:
             clan = data["clan"]["members"]
             opps = data["opponent"]["members"]
+            bonuses = bonuses + 1 if check_winner(data["clan"], data["opponent"]) else bonuses
         elif data["opponent"]["tag"] == clan_tag:
             clan = data["opponent"]["members"]
             opps = data["clan"]["members"]
+            bonuses = bonuses + 1 if check_winner(data["opponent"], data["clan"]) else bonuses
         else:
-            return None
+            return None, bonuses
 
         summ_opps = [
             {"tag": opp["tag"], "th": opp["townhallLevel"], "pos": opp["mapPosition"]}
@@ -92,27 +102,28 @@ def get_war(clan_tag: str, war_tag: str) -> List[Dict[str, Any]] | None:
                 "percentage": perc
             })
 
-        return summ_clan
+        return summ_clan, bonuses
     except Exception as e:
         print(f"Error getting war: {e}")
 
 
 
-def find_wars(clan_tag: str, rounds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def find_wars(clan_tag: str, rounds: List[Dict[str, Any]]) -> (List[Dict[str, Any]], int):
     """Process all wars in the given rounds."""
     summ_clan = []
+    bonuses = 2
     for round_data in rounds:
         war_tags = round_data.get("warTags", [])
         for war_tag in war_tags:
             if war_tag != "#0":
-                war_info = get_war(clan_tag, war_tag)
+                war_info, bonuses = get_war(clan_tag, war_tag, bonuses)
                 if war_info:
                     summ_clan.extend(war_info)
                     break
-    return summ_clan
+    return summ_clan, bonuses
 
 
-def consolidate_leaderboard(summ_clan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def consolidate_leaderboard(summ_clan: List[Dict[str, Any]], bonuses: int) -> List[Dict[str, Any]]:
     """Consolidate leaderboard entries and sort them."""
     rankings = []
     for sum_data in summ_clan:
@@ -144,7 +155,6 @@ def consolidate_leaderboard(summ_clan: List[Dict[str, Any]]) -> List[Dict[str, A
     rankings.sort(key=lambda x: (-x["stars"], -x["percentage"]))
     sorted_rankings = []
     counter = 0
-    bonus_counter = 6
     for ranking in rankings:
         counter += 1
         sorted_rankings.append({
@@ -154,7 +164,7 @@ def consolidate_leaderboard(summ_clan: List[Dict[str, Any]]) -> List[Dict[str, A
             'stars': ranking["stars"],
             'percentage': ranking["percentage"],
             'th': ranking["th"],
-            'bonus': True if counter <= bonus_counter else False
+            'bonus': True if counter <= bonuses else False
         })
     return sorted_rankings
 

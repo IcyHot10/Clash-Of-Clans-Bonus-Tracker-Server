@@ -36,6 +36,16 @@ def get_leaderboard(clan_tag: str) -> dict[str, Any] | None:
         else:
             return {'state': 'NON-CWL'}
     except Exception as e:
+        if data['reason'] == 'notFound':
+            response = http.get(
+                f"{BASE_URL}/clans/{clan_tag.replace('#', '%23')}",
+                headers={"Authorization": f"Bearer {API_KEY}"}
+            )
+            data = response.json()
+            if "tag" in data:
+                return {'state': 'NON-CWL'}
+            else:
+                return {'state': 'NO-CLAN'}
         print(f"Error getting league: {e}")
 
 
